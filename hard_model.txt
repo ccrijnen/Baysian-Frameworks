@@ -1,0 +1,22 @@
+model {
+  for(i in 1 : N) {
+    y[i] ~ dnorm(mu[i], tau[i])
+    y.pred[i] ~ dnorm(mu[i], tau[i])
+
+    mu[i] <- theta1 / (1 + theta2 * pow(theta3, t[i]))
+    tau[i] <- 1 / (sigma[i] * sigma[i])
+    sigma[i] <- exp(gamma0 + gamma1 * t[i]) 
+
+    res[i] <- (y[i] - mu[i]) * pow(tau[i], 0.5)
+  }
+  theta1 ~ dunif(0, 1000)
+
+  log(theta2) <- phi2
+  phi2 ~ dnorm(0, 0.01)
+
+  logit(theta3) <- phi3
+  phi3 ~ dnorm(0, 0.01)
+
+  gamma0 ~ dnorm(0, 0.25)
+  gamma1 ~ dnorm(0, 0.25)
+}

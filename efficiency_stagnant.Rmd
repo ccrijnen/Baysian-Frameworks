@@ -1,0 +1,269 @@
+---
+title: "Stagnant Efficiency"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  html_notebook: default
+---
+
+# Data
+
+```{r}
+N = 29
+
+Y = c(1.12, 1.12, 0.99, 1.03, 0.92, 0.90, 0.81, 0.83, 0.65, 0.67, 0.60, 
+      0.59, 0.51, 0.44, 0.43, 0.43, 0.33, 0.30, 0.25, 0.24, 0.13, -0.01, 
+      -0.13,  -0.14, -0.30, -0.33, -0.46,  -0.43, -0.65)
+
+x = c(-1.39, -1.39, -1.08, -1.08, -0.94, -0.80, -0.63, -0.63, -0.25, 
+      -0.25, -0.12, -0.12, 0.01, 0.11, 0.11, 0.11,  0.25, 0.25, 0.34, 
+      0.34, 0.44, 0.59, 0.70, 0.70, 0.85, 0.85,  0.99, 0.99, 1.19)
+
+inits = list(chain1 = list(alpha = 0.47, beta = c(-0.45, -1.0), tau = 5, x.change = 0.5), 
+             chain2 = list(alpha = 0.47, beta = c(-0.45, -1.0), tau = 5, x.change = 0.5))
+```
+
+# Model
+
+```{r}
+cat("model {
+   	for(i in 1 : N) {
+   		Y[i] ~ dnorm(mu[i], tau)
+   		mu[i] <- alpha + beta[J[i]] * (x[i] - x.change)		
+   		J[i] <- 1 + step(x[i] - x.change)
+   	}
+   	tau ~ dgamma(0.001, 0.001)
+   	alpha ~ dnorm(0.0,1.0E-6)
+   	for(j in 1 : 2) {
+   		beta[j] ~ dnorm(0.0,1.0E-6)
+   	}
+   	sigma <- 1 / sqrt(tau)
+   	x.change ~ dunif(-1.3,1.1)
+}")
+```
+
+# Test efficiency
+
+## OpenBUGS
+
+```{r}
+library(R2OpenBUGS)
+
+par = c("alpha", "beta", "sigma", "x.change")
+
+test.bugs = function() {
+   result = bugs(data = list("N", "Y", "x"),
+                 inits = inits,
+                 parameters.to.save = par,
+                 model.file = "stagnant_model2.txt",
+                 n.chains = 2,
+                 n.iter = 20000,
+                 n.thin = 1,
+                 n.burnin = 0,
+                 DIC = TRUE)
+}
+
+# test.bugs()
+```
+
+## JAGS
+
+```{r}
+library(R2jags)
+
+par = c("alpha", "beta", "sigma", "x.change")
+
+test.jags = function() {
+   result = jags(data = list("N", "Y", "x"),
+                 inits = inits,
+                 parameters.to.save = par,
+                 model.file = "stagnant_model2.txt",
+                 n.chains = 2,
+                 n.iter = 20000,
+                 n.thin = 1,
+                 n.burnin = 0,
+                 DIC = TRUE)
+}
+
+# test.jags()
+```
+
+## Nimble setup
+
+```{r}
+library(nimble, warn.conflicts = FALSE)
+
+monitors = list("alpha", "beta", "sigma", "x.change", "tau")
+constants = list(N = N)
+data = list(x = x, Y = Y)
+```
+
+
+## Nimble (standard mcmc)
+
+```{r}
+test.nimble.standard.mcmc = function() {
+   # model configuration
+   code = nimbleCode({
+      for(i in 1 : N) {
+         Y[i] ~ dnorm(mu[i],  tau)
+         mu[i] <- alpha + beta[J[i]] * (x[i] - x.change)
+         J[i] <- 1 + step(x[i] - x.change)
+      }
+      tau ~ dgamma(0.001, 0.001)
+      alpha ~ dnorm(0.0,1.0E-6)
+      
+      for(j in 1:2){
+         beta[j] ~ dnorm(0.0,1.0E-6)
+      }
+      sigma <-  1 / sqrt(tau)
+      x.change ~ dunif(-1.3,1.1)
+   })
+   
+   results = nimbleMCMC(code = code,
+                        constants = constants,
+                        data = data,
+                        inits = inits,
+                        nburnin = 0,
+                        niter = 20000,
+                        nchains = 2,
+                        summary = TRUE,
+                        WAIC = TRUE,
+                        monitors = monitors)
+}
+
+# test.nimble.standard.mcmc()
+```
+
+## Nimble (custom mcmc)
+
+```{r}
+test.nimble.custom.mcmc = function() {
+   code = nimbleCode({
+      for(i in 1 : N) {
+         Y[i] ~ dnorm(mu[i],  tau)
+         mu[i] <- alpha + beta[J[i]] * (x[i] - x.change)
+         J[i] <- 1 + step(x[i] - x.change)
+      }
+      tau ~ dgamma(0.001, 0.001)
+      alpha ~ dnorm(0.0,1.0E-6)
+      
+      for(j in 1:2){
+         beta[j] ~ dnorm(0.0,1.0E-6)
+      }
+      sigma <-  1 / sqrt(tau)
+      x.change ~ dunif(-1.3,1.1)
+   })
+   
+   model = nimbleModel(code,
+                       constants = constants,
+                       data = data,
+                       inits = inits$chain1)
+   
+   # MCMC configuration and building
+   mcmc.conf = configureMCMC(model, monitors = monitors, enableWAIC = TRUE)
+   mcmc = buildMCMC(mcmc.conf, monitors = monitors)
+   
+   # compile to C++, and run
+   compiled.model = compileNimble(model)
+   compiled.mcmc = compileNimble(mcmc, project = model)
+   
+   # run multiple MCMC chains
+   results = runMCMC(compiled.mcmc, 
+                     nburnin = 0,
+                     inits = inits,
+                     niter = 20000,
+                     nchains = 2,
+                     summary = TRUE,
+                     WAIC = TRUE)
+   
+}
+
+# test.nimble.custom.mcmc()
+```
+
+## Nimble (sample from a compiled model)
+
+```{r}
+# model configuration
+code = nimbleCode({
+   for(i in 1 : N) {
+      Y[i] ~ dnorm(mu[i],  tau)
+      mu[i] <- alpha + beta[J[i]] * (x[i] - x.change)
+      J[i] <- 1 + step(x[i] - x.change)
+   }
+   tau ~ dgamma(0.001, 0.001)
+   alpha ~ dnorm(0.0,1.0E-6)
+   
+   for(j in 1:2){
+      beta[j] ~ dnorm(0.0,1.0E-6)
+   }
+   sigma <-  1 / sqrt(tau)
+   x.change ~ dunif(-1.3,1.1)
+})
+
+model = nimbleModel(code,
+                    constants = constants,
+                    data = data,
+                    inits = inits$chain1)
+   
+# MCMC configuration and building
+mcmc.conf = configureMCMC(model, monitors = monitors, enableWAIC = TRUE)
+mcmc = buildMCMC(mcmc.conf, monitors = monitors)
+
+# compile to C++, and run
+compiled.model = compileNimble(model)
+compiled.mcmc = compileNimble(mcmc, project = model)
+```
+
+```{r}
+test.nimble.only.sampling = function() {
+   results = runMCMC(compiled.mcmc, 
+                     nburnin = 0,
+                     inits = inits,
+                     niter = 20000,
+                     nchains = 2,
+                     summary = TRUE,
+                     WAIC = TRUE)
+}
+
+# test.nimble.only.sampling()
+```
+
+
+```{r}
+library("rstan")
+options(mc.cores = parallel::detectCores())
+rstan_options(auto_write = TRUE)
+
+
+test.stan = function() {
+   result = stan('stagnant2.stan', 
+                 data = c("N","x","Y"),
+                 chains = 2,
+                 init = inits,
+                 iter = 4000)
+}
+
+# test.stan()
+```
+
+
+
+
+# Benchmark
+
+```{r}
+library(microbenchmark)
+
+times = microbenchmark("OpenBUGS" = {test.bugs()},
+                       "JAGS" = {test.jags()},
+                       "Nimble (standard mcmc)" = {test.nimble.standard.mcmc()},
+                       "Nimble (custom mcmc)" = {test.nimble.custom.mcmc()},
+                       "Nimble (sample from pre compiled model)" = {test.nimble.only.sampling()},
+                       "Stan" = {test.stan()},
+                       times = 5)
+
+print(times)
+```
